@@ -1,13 +1,17 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/redis/go-redis/v9"
 )
 
 type Link struct {
@@ -33,14 +37,46 @@ type PingData struct {
 	Description  string    `json:"description"`
 }
 
-var pingData map[int]PingData
+var (
+	ctx = context.Background()
+
+	rdb *redis.Client
+)
 
 func init() {
-	pingData = make(map[int]PingData)
+	rdb = redis.NewClient(&redis.Options{
+		Addr:     "localhost:6379",
+		Password: "",
+		DB:       0,
+	})
+
+	if err := rdb.Ping(ctx).Err(); err != nil {
+		log.Fatalf("Failed to connect to Redis: %v", err)
+	}
 }
 
 func main() {
 	router := gin.Default()
+	router.GET("/data", func(c *gin.Context) {
+		pingData, err := rdb.HGetAll(context.Background(), "ping_data").Result()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve ping data"})
+			return
+		}
+
+		var pingDataSlice []PingData
+		for _, v := range pingData {
+			var pd PingData
+			err := json.Unmarshal([]byte(v), &pd)
+			if err != nil {
+				log.Printf("Error unmarshaling ping data: %s", err)
+				continue
+			}
+			pingDataSlice = append(pingDataSlice, pd)
+		}
+
+		c.JSON(http.StatusOK, pingDataSlice)
+	})
 
 	var config Config
 	if err := loadConfig("config.json", &config); err != nil {
@@ -62,10 +98,6 @@ func main() {
 			pingLinks(config.Links, defaultDuration)
 		}
 	}()
-
-	router.GET("/data", func(c *gin.Context) {
-		c.JSON(http.StatusOK, pingData)
-	})
 
 	router.Run(":8080")
 }
@@ -106,6 +138,7 @@ func pingLinks(links []Link, defaultDuration time.Duration) {
 }
 
 func pingLink(link Link) {
+
 	start := time.Now()
 	resp, err := http.Get(link.URL)
 	responseTime := time.Since(start).Milliseconds()
@@ -121,12 +154,22 @@ func pingLink(link Link) {
 		statusCode = resp.StatusCode
 	}
 
-	pingData[link.ID] = PingData{
-		ID:           link.ID,
-		IsUp:         isUp,
-		ResponseTime: responseTime,
-		StatusCode:   statusCode,
-		Time:         time.Now(),
-		Description:  link.Description,
+	data := map[string]interface{}{
+		"id":            link.ID,
+		"is_up":         isUp,
+		"response_time": responseTime,
+		"status_code":   statusCode,
+		"time_pinged":   time.Now().Format(time.RFC3339),
+		"description":   link.Description,
+	}
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		log.Printf("Error marshaling ping data for link %s: %s", link.Title, err)
+		return
+	}
+
+	err = rdb.HSet(ctx, "ping_data", strconv.Itoa(link.ID), jsonData).Err()
+	if err != nil {
+		log.Printf("Error storing ping data for link %s in Redis: %s", link.Title, err)
 	}
 }
