@@ -1,8 +1,10 @@
 {
+  "port": "4000",
+  "address": "0.0.0.0",
     "links": [
       {"id": 1, "title": "notmycode_home", "description": "An normycode.dev homepage", "link": "https://notmycode.dev", "duration": "10s"},
       {"id": 2, "title": "notmycode_statuc", "description": "Static file for notmycode.dev", "link": "https://static.notmycode.dev"}
     ],
-    "duration": "20s"
+    "duration": "2s"
   }
   

@@ -1,46 +1,45 @@
 package main
 
 import (
-	"encoding/json"
-	"log"
-	"net/http"
-	"os"
+	"runtime"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-type Link struct {
-	ID          int    `json:"id"`
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	URL         string `json:"link"`
-	Duration    string `json:"duration,omitempty"`
-}
-
-type Config struct {
-	Links           []Link `json:"links"`
-	Duration        string `json:"duration"`
-	DefaultDuration time.Duration
-}
-
-type PingData struct {
-	ID           int       `json:"id"`
-	IsUp         bool      `json:"is_up"`
-	ResponseTime int64     `json:"response_time"`
-	StatusCode   int       `json:"status_code"`
-	Time         time.Time `json:"time_pinged"`
-	Description  string    `json:"description"`
-}
+const maxPingRecords = 100
 
 var pingData map[int]PingData
+var (
+	memUsage = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "mem_usage",
+		Help: "Current memory usage in bytes.",
+	})
+	peakMemUsage = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "peak_mem_usage",
+		Help: "Peak memory usage in bytes.",
+	})
+	nextGC = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "next_gc_time",
+		Help: "Next garbage collection (GC) time in Unix timestamp format.",
+	})
+	mtx sync.Mutex
+)
 
 func init() {
 	pingData = make(map[int]PingData)
+	prometheus.MustRegister(memUsage)
+	prometheus.MustRegister(peakMemUsage)
+	prometheus.MustRegister(nextGC)
 }
 
 func main() {
 	router := gin.Default()
+
+	api := router.Group("/api")
 
 	var config Config
 	if err := loadConfig("config.json", &config); err != nil {
@@ -63,70 +62,24 @@ func main() {
 		}
 	}()
 
-	router.GET("/data", func(c *gin.Context) {
-		c.JSON(http.StatusOK, pingData)
-	})
+	api.GET("/records", getRecordsHandler)
 
-	router.Run(":8080")
-}
+	api.GET("/records/:id", getRecordByIDHandler)
 
-func loadConfig(filename string, config *Config) error {
-	file, err := os.Open(filename)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	decoder := json.NewDecoder(file)
-	if err := decoder.Decode(config); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func pingLinks(links []Link, defaultDuration time.Duration) {
-	for _, link := range links {
-		duration := defaultDuration
-		if link.Duration != "" {
-			d, err := time.ParseDuration(link.Duration)
-			if err != nil {
-				log.Printf("Error parsing duration for link %s: %s", link.Title, err)
-				continue
-			}
-			duration = d
+	go func() {
+		for range time.Tick(5 * time.Second) {
+			mtx.Lock()
+			var m runtime.MemStats
+			runtime.ReadMemStats(&m)
+			memUsage.Set(float64(m.HeapAlloc))
+			peakMemUsage.Set(float64(m.HeapSys))
+			nextGC.Set(float64(m.NextGC) / 1e9)
+			mtx.Unlock()
 		}
-		go func(link Link, duration time.Duration) {
-			for {
-				pingLink(link)
-				time.Sleep(duration)
-			}
-		}(link, duration)
-	}
-}
+	}()
 
-func pingLink(link Link) {
-	start := time.Now()
-	resp, err := http.Get(link.URL)
-	responseTime := time.Since(start).Milliseconds()
+	router.GET("/metrics", gin.WrapH(promhttp.Handler()))
 
-	var isUp bool
-	var statusCode int
-
-	if err != nil {
-		isUp = false
-		statusCode = http.StatusInternalServerError
-	} else {
-		isUp = true
-		statusCode = resp.StatusCode
-	}
-
-	pingData[link.ID] = PingData{
-		ID:           link.ID,
-		IsUp:         isUp,
-		ResponseTime: responseTime,
-		StatusCode:   statusCode,
-		Time:         time.Now(),
-		Description:  link.Description,
-	}
+	address := config.Address + ":" + config.Port
+	router.Run(address)
 }
