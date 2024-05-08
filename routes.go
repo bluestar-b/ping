@@ -7,6 +7,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+
+
 func getRecordsHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, pingData)
 }

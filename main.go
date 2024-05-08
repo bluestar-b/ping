@@ -4,7 +4,8 @@ import (
 	"runtime"
 	"sync"
 	"time"
-
+	
+	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -38,7 +39,7 @@ func init() {
 
 func main() {
 	router := gin.Default()
-
+	router.Use(cors.Default())
 	api := router.Group("/api")
 
 	var config Config
